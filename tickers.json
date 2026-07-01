@@ -1,5 +1,15 @@
 {
-  "tickers": ["AAPL", "MSTR", "COIN", "NVDA", "TSLA"],
+  "tickers": [
+    "AAPL",
+    "MSTR",
+    "COIN",
+    "NVDA",
+    "TSLA",
+    "MSFT,"
+  ],
   "drop_threshold_percent": 5.0,
-  "telegram_channels": ["markettwits", "crypto_hd"]
+  "telegram_channels": [
+    "markettwits",
+    "crypto_hd"
+  ]
 }
