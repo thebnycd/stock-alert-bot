@@ -1,0 +1,64 @@
+name: Stock Alert Bot
+
+on:
+  schedule:
+    # Проверка просадок: каждые 30 минут по будням, 13:00-21:59 UTC.
+    # Этот диапазон с запасом покрывает торговую сессию NYSE/NASDAQ
+    # (9:30-16:00 по Нью-Йорку) и летом, и зимой.
+    - cron: '*/30 13-21 * * 1-5'
+    # Еженедельный дайджест новостей: понедельник, 12:00 UTC (~8:00 утра в Нью-Йорке).
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+    # Ручной запуск из вкладки Actions в GitHub - это и есть запуск "по запросу".
+    inputs:
+      mode:
+        description: 'Режим запуска'
+        required: true
+        default: 'check'
+        type: choice
+        options:
+          - check
+          - digest
+
+permissions:
+  contents: write  # нужно, чтобы бот мог сохранять state.json обратно в репозиторий
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Установка зависимостей
+        run: pip install -r requirements.txt
+
+      - name: Определение режима запуска
+        id: pick_mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 12 * * 1" ]; then
+            echo "mode=digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=check" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Запуск бота
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python stock_alert_bot.py --mode ${{ steps.pick_mode.outputs.mode }}
+
+      - name: Сохранение state.json обратно в репозиторий
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "stock-alert-bot@users.noreply.github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "update state"
+          git push

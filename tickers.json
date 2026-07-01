@@ -1,0 +1,4 @@
+{
+  "tickers": ["AAPL", "MSTR", "COIN", "NVDA", "TSLA"],
+  "drop_threshold_percent": 5.0
+}
