@@ -23,6 +23,8 @@ Telegram-бот для отслеживания акций.
 """
 
 import os
+import re
+import html
 import json
 import sys
 import argparse
@@ -122,20 +124,87 @@ def get_company_news(symbol, days_back=3):
     return resp.json()
 
 
-def summarize_reason_with_ai(symbol, change_pct, headlines):
+def fetch_telegram_channel(channel, hours_back=48):
+    """Скачивает публичное веб-превью Telegram-канала (t.me/s/<channel>) и возвращает
+    свежие посты за последние hours_back часов: список {text, dt, channel}.
+
+    Работает только для ПУБЛИЧНЫХ каналов с включённым веб-превью. Если канал приватный,
+    превью отключено или страница недоступна — возвращает пустой список и не роняет бота."""
+    url = f"https://t.me/s/{channel}"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Канал @{channel}: не удалось загрузить ({e})")
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    posts = []
+    # Разбиваем страницу на блоки-сообщения и в каждом ищем текст и время.
+    blocks = re.split(r'<div class="tgme_widget_message ', resp.text)
+    for block in blocks[1:]:
+        text_m = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S)
+        time_m = re.search(r'<time[^>]*datetime="([^"]+)"', block)
+        if not text_m:
+            continue  # пост без текста (только медиа) — пропускаем
+        text = re.sub(r'<br\s*/?>', '\n', text_m.group(1))
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html.unescape(text).strip()
+        if not text:
+            continue
+        dt = None
+        if time_m:
+            try:
+                dt = datetime.fromisoformat(time_m.group(1))
+            except ValueError:
+                dt = None
+        if dt and dt < cutoff:
+            continue
+        posts.append({"text": text, "dt": dt, "channel": channel})
+    return posts
+
+
+def load_channel_posts(config, hours_back=48):
+    """Собирает посты со всех каналов из config['telegram_channels'] за период."""
+    posts = []
+    for ch in config.get("telegram_channels", []):
+        posts.extend(fetch_telegram_channel(ch, hours_back=hours_back))
+    return posts
+
+
+def summarize_reason_with_ai(symbol, change_pct, headlines, channel_posts=None):
     """Опционально спрашивает у Claude (Haiku) вероятную причину падения по заголовкам новостей.
     Если ANTHROPIC_API_KEY не задан или новостей нет - возвращает None, и бот просто
     присылает сами заголовки без AI-комментария."""
-    if not ANTHROPIC_API_KEY or not headlines:
+    if not ANTHROPIC_API_KEY or (not headlines and not channel_posts):
         return None
 
-    titles = "\n".join(f"- {h.get('headline', '')}" for h in headlines[:8])
+    titles = (
+        "\n".join(f"- {h.get('headline', '')}" for h in headlines[:8])
+        if headlines else "(нет новостей от Finnhub по этой компании)"
+    )
+
+    # Контекст из Telegram-каналов: сначала посты, где упомянут тикер (специфичные),
+    # иначе — несколько самых свежих постов как макро-фон (ФРС, геополитика и т.п.).
+    tg_block = ""
+    if channel_posts:
+        sym = symbol.upper()
+        specific = [p for p in channel_posts if sym in p["text"].upper()]
+        chosen = specific[:6] if specific else channel_posts[-8:]
+        tg_lines = "\n".join(f"- [@{p['channel']}] {p['text'][:200]}" for p in chosen)
+        tg_block = (
+            "\n\nСвежие посты из Telegram-каналов (могут объяснять как новость по компании, "
+            f"так и общий фон рынка):\n{tg_lines}"
+        )
+
     prompt = (
         f"Акция {symbol} упала на {abs(change_pct):.1f}% за день. "
-        f"Вот свежие заголовки новостей по этой компании:\n{titles}\n\n"
+        f"Вот свежие заголовки новостей по этой компании:\n{titles}"
+        f"{tg_block}\n\n"
         f"В 1-2 коротких предложениях на русском: похоже ли падение связано "
-        f"с одной из этих новостей и какой конкретно? Если явной причины не видно "
-        f"(например, просадка вместе со всем рынком), честно скажи об этом."
+        f"с конкретной новостью/событием, и с каким именно? Учитывай и новости по компании, "
+        f"и общий фон рынка из постов каналов. Если явной причины не видно "
+        f"(например, просадка вместе со всем рынком без своего триггера), честно скажи об этом."
     )
     try:
         resp = requests.post(
@@ -147,7 +216,7 @@ def summarize_reason_with_ai(symbol, change_pct, headlines):
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 200,
+                "max_tokens": 250,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
@@ -245,6 +314,9 @@ def mode_check(config, state):
     today_str = datetime.now(timezone.utc).date().isoformat()
     alerts_sent = 0
 
+    # Посты каналов грузим один раз на весь прогон (общий макро-фон для всех тикеров).
+    channel_posts = load_channel_posts(config, hours_back=48) if config.get("telegram_channels") else []
+
     for symbol in config["tickers"]:
         try:
             quote = get_quote(symbol)
@@ -260,7 +332,7 @@ def mode_check(config, state):
 
             if change_pct <= -threshold and not already_alerted_today:
                 news = get_company_news(symbol, days_back=2)
-                reason = summarize_reason_with_ai(symbol, change_pct, news)
+                reason = summarize_reason_with_ai(symbol, change_pct, news, channel_posts)
 
                 text = (
                     f"📉 <b>{symbol}</b>: {change_pct:.1f}% за день\n"
@@ -304,6 +376,20 @@ def mode_digest(config, state):
                 lines.append(f"• {h.get('headline', '')} ({h.get('source', '')})")
         except Exception as e:
             lines.append(f"— ошибка получения новостей: {e}")
+
+    # Блок с постами из Telegram-каналов за неделю (по нескольку свежих на канал).
+    channels = config.get("telegram_channels", [])
+    if channels:
+        lines.append("\n🌐 <b>Из Telegram-каналов</b>")
+        for ch in channels:
+            posts = fetch_telegram_channel(ch, hours_back=24 * 7)
+            lines.append(f"\n<b>@{ch}</b>")
+            if not posts:
+                lines.append("— не удалось прочитать (приватный канал или превью выключено)")
+                continue
+            for p in posts[-5:]:  # 5 самых свежих
+                first_line = p["text"].splitlines()[0][:150]
+                lines.append(f"• {first_line}")
 
     try:
         send_telegram("\n".join(lines))
