@@ -340,10 +340,13 @@ def mode_check(config, state):
                 )
                 if reason:
                     text += f"\n<b>Возможная причина:</b> {reason}\n"
-                if news:
-                    text += "\nСвежие заголовки:\n"
-                    for h in news[:3]:
-                        text += f"• {h.get('headline', '')} ({h.get('source', '')})\n"
+                else:
+                    # AI-ключ не задан или новостей нет - показываем сырые
+                    # английские заголовки как есть, это лучше, чем ничего
+                    if news:
+                        text += "\nСвежие заголовки (без перевода):\n"
+                        for h in news[:3]:
+                            text += f"• {h.get('headline', '')} ({h.get('source', '')})\n"
 
                 send_telegram(text)
                 state.setdefault(symbol, {})["last_alert_date"] = today_str
