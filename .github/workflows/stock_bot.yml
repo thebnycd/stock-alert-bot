@@ -55,10 +55,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python stock_alert_bot.py --mode ${{ steps.pick_mode.outputs.mode }}
 
-      - name: Сохранение state.json обратно в репозиторий
+      - name: Сохранение state.json и tickers.json обратно в репозиторий
         run: |
           git config user.name "stock-alert-bot"
           git config user.email "stock-alert-bot@users.noreply.github.com"
-          git add state.json
-          git diff --staged --quiet || git commit -m "update state"
+          git add state.json tickers.json
+          git diff --staged --quiet || git commit -m "update state/tickers"
+          git pull --rebase --autostash || true
           git push
