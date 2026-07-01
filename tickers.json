@@ -1,10 +1,11 @@
 {
   "tickers": [
     "AAPL",
-    "MSTR",
-    "NVDA",
-    "TSLA",
-    "MSFT,"
+    "MSFT",
+    "GOOGL",
+    "UNH",
+    "META",
+    "AMZN"
   ],
   "drop_threshold_percent": 5.0,
   "telegram_channels": [

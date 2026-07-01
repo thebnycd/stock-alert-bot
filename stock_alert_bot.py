@@ -260,9 +260,12 @@ def process_commands(config, state):
         if not text.startswith("/"):
             continue
 
-        parts = text.split()
+        parts = text.split(maxsplit=1)
         cmd = parts[0].lower().split("@")[0]  # убираем @botname, если добавлен
-        arg = parts[1] if len(parts) > 1 else None
+        rest = parts[1] if len(parts) > 1 else None
+        # тикеры можно перечислять через запятую и/или пробел: "MSTR, COIN NVDA,TSLA"
+        symbols = [s.upper() for s in re.split(r"[,\s]+", rest.strip()) if s.strip()] if rest else []
+        arg = symbols[0] if symbols else None  # для команд с одним аргументом (/threshold)
 
         if cmd == "/list":
             tickers = config.get("tickers", [])
@@ -270,25 +273,41 @@ def process_commands(config, state):
                 "📋 <b>Текущие тикеры:</b>\n" + (", ".join(tickers) or "(список пуст)")
                 + f"\n\nПорог падения: {config.get('drop_threshold_percent', 5.0)}%"
             )
-        elif cmd == "/add" and arg:
-            sym = arg.upper()
-            if sym in config["tickers"]:
-                send_telegram(f"{sym} уже в списке.")
-            else:
-                config["tickers"].append(sym)
-                config_changed = True
-                send_telegram(f"✅ Добавлен {sym}.\nСейчас отслеживаю: {', '.join(config['tickers'])}")
-        elif cmd == "/remove" and arg:
-            sym = arg.upper()
-            if sym in config["tickers"]:
-                config["tickers"].remove(sym)
-                config_changed = True
-                send_telegram(f"🗑 Убран {sym}.\nСейчас отслеживаю: {', '.join(config['tickers']) or '(список пуст)'}")
-            else:
-                send_telegram(f"{sym} нет в списке.")
-        elif cmd == "/threshold" and arg:
+        elif cmd == "/add" and symbols:
+            added, already = [], []
+            for sym in symbols:
+                if sym in config["tickers"]:
+                    already.append(sym)
+                else:
+                    config["tickers"].append(sym)
+                    added.append(sym)
+            config_changed = config_changed or bool(added)
+            msg = ""
+            if added:
+                msg += f"✅ Добавлены: {', '.join(added)}\n"
+            if already:
+                msg += f"Уже были в списке: {', '.join(already)}\n"
+            msg += f"\nСейчас отслеживаю: {', '.join(config['tickers'])}"
+            send_telegram(msg)
+        elif cmd == "/remove" and symbols:
+            removed, missing = [], []
+            for sym in symbols:
+                if sym in config["tickers"]:
+                    config["tickers"].remove(sym)
+                    removed.append(sym)
+                else:
+                    missing.append(sym)
+            config_changed = config_changed or bool(removed)
+            msg = ""
+            if removed:
+                msg += f"🗑 Убраны: {', '.join(removed)}\n"
+            if missing:
+                msg += f"Не было в списке: {', '.join(missing)}\n"
+            msg += f"\nСейчас отслеживаю: {', '.join(config['tickers']) or '(список пуст)'}"
+            send_telegram(msg)
+        elif cmd == "/threshold" and rest:
             try:
-                val = float(arg.replace(",", "."))
+                val = float(rest.strip().replace(",", "."))
                 config["drop_threshold_percent"] = val
                 config_changed = True
                 send_telegram(f"✅ Порог падения теперь {val}%.")
